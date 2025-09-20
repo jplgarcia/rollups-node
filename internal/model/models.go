@@ -780,15 +780,171 @@ func (e DefaultBlock) String() string {
 type MonitoredEvent string
 
 const (
-	MonitoredEvent_InputAdded     MonitoredEvent = "InputAdded"
-	MonitoredEvent_OutputExecuted MonitoredEvent = "OutputExecuted"
-	MonitoredEvent_ClaimSubmitted MonitoredEvent = "ClaimSubmitted"
-	MonitoredEvent_ClaimAccepted  MonitoredEvent = "ClaimAccepted"
-	MonitoredEvent_EpochSealed    MonitoredEvent = "EpochSealed"
+	MonitoredEvent_InputAdded         MonitoredEvent = "InputAdded"
+	MonitoredEvent_OutputExecuted     MonitoredEvent = "OutputExecuted"
+	MonitoredEvent_ClaimSubmitted     MonitoredEvent = "ClaimSubmitted"
+	MonitoredEvent_ClaimAccepted      MonitoredEvent = "ClaimAccepted"
+	MonitoredEvent_EpochSealed        MonitoredEvent = "EpochSealed"
+	MonitoredEvent_CommitmentJoined   MonitoredEvent = "commitmentJoined"
+	MonitoredEvent_MatchAdvanced      MonitoredEvent = "matchAdvanced"
+	MonitoredEvent_MatchCreated       MonitoredEvent = "matchCreated"
+	MonitoredEvent_MatchDeleted       MonitoredEvent = "matchDeleted"
+	MonitoredEvent_NewInnerTournament MonitoredEvent = "newInnerTournament"
 )
 
 func (e MonitoredEvent) String() string {
 	return string(e)
+}
+
+type Tournament struct {
+	ApplicationID           int64           `sql:"primary_key" json:"-"`
+	EpochIndex              uint64          `sql:"primary_key" json:"epoch_index"`
+	Address                 common.Address  `sql:"primary_key" json:"address"`
+	ParentTournamentAddress *common.Address `json:"parent_tournament_address"`
+	ParentMatchIDHash       *common.Hash    `json:"parent_match_id_hash"`
+	MaxLevel                uint64          `json:"max_level"`
+	Level                   uint64          `json:"level"`
+	Log2Step                uint64          `json:"log2step"`
+	Height                  uint64          `json:"height"`
+	WinnerCommitment        []byte          `json:"winner_commitment"`
+	FinishedAtBlock         uint64          `json:"finished_at_block"`
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
+}
+
+func (t *Tournament) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias Tournament
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex       string  `json:"epoch_index"`
+		MaxLevel         string  `json:"max_level"`
+		Level            string  `json:"level"`
+		Log2Step         string  `json:"log2step"`
+		Height           string  `json:"height"`
+		WinnerCommitment *string `json:"winner_commitment"`
+		FinishedAtBlock  string  `json:"finished_at_block"`
+		*Alias
+	}{
+		Alias:           (*Alias)(t),
+		EpochIndex:      fmt.Sprintf("0x%x", t.EpochIndex),
+		MaxLevel:        fmt.Sprintf("0x%x", t.MaxLevel),
+		Level:           fmt.Sprintf("0x%x", t.Level),
+		Log2Step:        fmt.Sprintf("0x%x", t.Log2Step),
+		Height:          fmt.Sprintf("0x%x", t.Height),
+		FinishedAtBlock: fmt.Sprintf("0x%x", t.FinishedAtBlock),
+	}
+	if len(t.WinnerCommitment) != 0 {
+		wc := "0x" + hex.EncodeToString(t.WinnerCommitment)
+		aux.WinnerCommitment = &wc
+	}
+	return json.Marshal(aux)
+}
+
+type Commitment struct {
+	ApplicationID      int64           `sql:"primary_key" json:"-"`
+	EpochIndex         uint64          `sql:"primary_key" json:"epoch_index"`
+	TournamentAddress  common.Address  `sql:"primary_key" json:"tournament_address"`
+	Commitment         []byte          `sql:"primary_key" json:"commitment"`
+	FinalStateHash     *common.Hash    `json:"final_state_hash"`
+	ParticipantAddress *common.Address `json:"participant_address"`
+	BlockNumber        uint64          `json:"block_number"`
+	TxHash             common.Hash     `json:"tx_hash"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
+}
+
+func (c *Commitment) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias Commitment
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex  string `json:"epoch_index"`
+		Commitment  string `json:"commitment"`
+		BlockNumber string `json:"block_number"`
+		*Alias
+	}{
+		EpochIndex:  fmt.Sprintf("0x%x", c.EpochIndex),
+		Commitment:  "0x" + hex.EncodeToString(c.Commitment),
+		BlockNumber: fmt.Sprintf("0x%x", c.BlockNumber),
+		Alias:       (*Alias)(c),
+	}
+	return json.Marshal(aux)
+}
+
+type Match struct {
+	ApplicationID     int64          `sql:"primary_key" json:"-"`
+	EpochIndex        uint64         `sql:"primary_key" json:"epoch_index"`
+	TournamentAddress common.Address `sql:"primary_key" json:"tournament_address"`
+	IDHash            common.Hash    `sql:"primary_key" json:"id_hash"`
+	CommitmentOne     []byte         `json:"commitment_one"`
+	CommitmentTwo     []byte         `json:"commitment_two"`
+	LeftOfTwo         []byte         `json:"left_of_two"`
+	WinnerCommitment  []byte         `json:"winner_commitment"`
+	BlockNumber       uint64         `json:"block_number"`
+	TxHash            common.Hash    `json:"tx_hash"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+func (m *Match) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias Match
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex       string  `json:"epoch_index"`
+		CommitmentOne    string  `json:"commitment_one"`
+		CommitmentTwo    string  `json:"commitment_two"`
+		LeftOfTwo        string  `json:"left_of_two"`
+		WinnerCommitment *string `json:"winner_commitment"`
+		BlockNumber      string  `json:"block_number"`
+		*Alias
+	}{
+		EpochIndex:    fmt.Sprintf("0x%x", m.EpochIndex),
+		CommitmentOne: "0x" + hex.EncodeToString(m.CommitmentOne),
+		CommitmentTwo: "0x" + hex.EncodeToString(m.CommitmentTwo),
+		LeftOfTwo:     "0x" + hex.EncodeToString(m.LeftOfTwo),
+		BlockNumber:   fmt.Sprintf("0x%x", m.BlockNumber),
+		Alias:         (*Alias)(m),
+	}
+	if len(m.WinnerCommitment) != 0 {
+		wc := "0x" + hex.EncodeToString(m.WinnerCommitment)
+		aux.WinnerCommitment = &wc
+	}
+	return json.Marshal(aux)
+}
+
+type MatchAdvanced struct {
+	ApplicationID     int64          `sql:"primary_key" json:"-"`
+	EpochIndex        uint64         `sql:"primary_key" json:"epoch_index"`
+	TournamentAddress common.Address `sql:"primary_key" json:"tournament_address"`
+	IDHash            common.Hash    `sql:"primary_key" json:"id_hash"`
+	Parent            []byte         `json:"parent"`
+	LeftNode          []byte         `json:"left_node"`
+	BlockNumber       uint64         `json:"block_number"`
+	TxHash            common.Hash    `json:"tx_hash"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+func (m *MatchAdvanced) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias MatchAdvanced
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex  string `json:"epoch_index"`
+		Parent      string `json:"parent"`
+		LeftNode    string `json:"left_node"`
+		BlockNumber string `json:"block_number"`
+		*Alias
+	}{
+		EpochIndex:  fmt.Sprintf("0x%x", m.EpochIndex),
+		Parent:      "0x" + hex.EncodeToString(m.Parent),
+		LeftNode:    "0x" + hex.EncodeToString(m.LeftNode),
+		BlockNumber: fmt.Sprintf("0x%x", m.BlockNumber),
+		Alias:       (*Alias)(m),
+	}
+	return json.Marshal(aux)
 }
 
 func Pointer[T any](v T) *T {
