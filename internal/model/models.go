@@ -495,6 +495,7 @@ type Epoch struct {
 	MachineHash          *common.Hash    `json:"machine_hash"`
 	ClaimHash            *common.Hash    `json:"claim_hash"`
 	ClaimTransactionHash *common.Hash    `json:"claim_transaction_hash"`
+	Commitment           *common.Hash    `json:"commitment"`
 	TournamentAddress    *common.Address `json:"tournament_address"`
 	Status               EpochStatus     `json:"status"`
 	VirtualIndex         uint64          `json:"virtual_index"`
@@ -827,15 +828,275 @@ func (e DefaultBlock) String() string {
 type MonitoredEvent string
 
 const (
-	MonitoredEvent_InputAdded     MonitoredEvent = "InputAdded"
-	MonitoredEvent_OutputExecuted MonitoredEvent = "OutputExecuted"
-	MonitoredEvent_ClaimSubmitted MonitoredEvent = "ClaimSubmitted"
-	MonitoredEvent_ClaimAccepted  MonitoredEvent = "ClaimAccepted"
-	MonitoredEvent_EpochSealed    MonitoredEvent = "EpochSealed"
+	MonitoredEvent_InputAdded         MonitoredEvent = "InputAdded"
+	MonitoredEvent_OutputExecuted     MonitoredEvent = "OutputExecuted"
+	MonitoredEvent_ClaimSubmitted     MonitoredEvent = "ClaimSubmitted"
+	MonitoredEvent_ClaimAccepted      MonitoredEvent = "ClaimAccepted"
+	MonitoredEvent_EpochSealed        MonitoredEvent = "EpochSealed"
+	MonitoredEvent_CommitmentJoined   MonitoredEvent = "CommitmentJoined"
+	MonitoredEvent_MatchAdvanced      MonitoredEvent = "MatchAdvanced"
+	MonitoredEvent_MatchCreated       MonitoredEvent = "MatchCreated"
+	MonitoredEvent_MatchDeleted       MonitoredEvent = "MatchDeleted"
+	MonitoredEvent_NewInnerTournament MonitoredEvent = "NewInnerTournament"
 )
 
 func (e MonitoredEvent) String() string {
 	return string(e)
+}
+
+type Tournament struct {
+	ApplicationID           int64           `sql:"primary_key" json:"-"`
+	EpochIndex              uint64          `sql:"primary_key" json:"epoch_index"`
+	Address                 common.Address  `sql:"primary_key" json:"address"`
+	ParentTournamentAddress *common.Address `json:"parent_tournament_address"`
+	ParentMatchIDHash       *common.Hash    `json:"parent_match_id_hash"`
+	MaxLevel                uint64          `json:"max_level"`
+	Level                   uint64          `json:"level"`
+	Log2Step                uint64          `json:"log2step"`
+	Height                  uint64          `json:"height"`
+	WinnerCommitment        *common.Hash    `json:"winner_commitment"`
+	FinalStateHash          *common.Hash    `json:"final_state_hash"`
+	FinishedAtBlock         uint64          `json:"finished_at_block"`
+	CreatedAt               time.Time       `json:"created_at"`
+	UpdatedAt               time.Time       `json:"updated_at"`
+}
+
+func (t *Tournament) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias Tournament
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex      string `json:"epoch_index"`
+		MaxLevel        string `json:"max_level"`
+		Level           string `json:"level"`
+		Log2Step        string `json:"log2step"`
+		Height          string `json:"height"`
+		FinishedAtBlock string `json:"finished_at_block"`
+		*Alias
+	}{
+		Alias:           (*Alias)(t),
+		EpochIndex:      fmt.Sprintf("0x%x", t.EpochIndex),
+		MaxLevel:        fmt.Sprintf("0x%x", t.MaxLevel),
+		Level:           fmt.Sprintf("0x%x", t.Level),
+		Log2Step:        fmt.Sprintf("0x%x", t.Log2Step),
+		Height:          fmt.Sprintf("0x%x", t.Height),
+		FinishedAtBlock: fmt.Sprintf("0x%x", t.FinishedAtBlock),
+	}
+	return json.Marshal(aux)
+}
+
+type Commitment struct {
+	ApplicationID     int64          `sql:"primary_key" json:"-"`
+	EpochIndex        uint64         `sql:"primary_key" json:"epoch_index"`
+	TournamentAddress common.Address `sql:"primary_key" json:"tournament_address"`
+	Commitment        common.Hash    `sql:"primary_key" json:"commitment"`
+	FinalStateHash    common.Hash    `json:"final_state_hash"`
+	SubmitterAddress  common.Address `json:"submitter_address"`
+	BlockNumber       uint64         `json:"block_number"`
+	TxHash            common.Hash    `json:"tx_hash"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+func (c *Commitment) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias Commitment
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex  string `json:"epoch_index"`
+		BlockNumber string `json:"block_number"`
+		*Alias
+	}{
+		EpochIndex:  fmt.Sprintf("0x%x", c.EpochIndex),
+		BlockNumber: fmt.Sprintf("0x%x", c.BlockNumber),
+		Alias:       (*Alias)(c),
+	}
+	return json.Marshal(aux)
+}
+
+type Match struct {
+	ApplicationID       int64               `sql:"primary_key" json:"-"`
+	EpochIndex          uint64              `sql:"primary_key" json:"epoch_index"`
+	TournamentAddress   common.Address      `sql:"primary_key" json:"tournament_address"`
+	IDHash              common.Hash         `sql:"primary_key" json:"id_hash"`
+	CommitmentOne       common.Hash         `json:"commitment_one"`
+	CommitmentTwo       common.Hash         `json:"commitment_two"`
+	LeftOfTwo           common.Hash         `json:"left_of_two"`
+	BlockNumber         uint64              `json:"block_number"`
+	TxHash              common.Hash         `json:"tx_hash"`
+	Winner              WinnerCommitment    `json:"winner_commitment"`
+	DeletionReason      MatchDeletionReason `json:"deletion_reason"`
+	DeletionBlockNumber uint64              `json:"deletion_block_number"`
+	DeletionTxHash      common.Hash         `json:"deletion_tx_hash"`
+	CreatedAt           time.Time           `json:"created_at"`
+	UpdatedAt           time.Time           `json:"updated_at"`
+}
+
+func (m *Match) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias Match
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex          string `json:"epoch_index"`
+		BlockNumber         string `json:"block_number"`
+		DeletionBlockNumber string `json:"deletion_block_number"`
+		*Alias
+	}{
+		EpochIndex:          fmt.Sprintf("0x%x", m.EpochIndex),
+		BlockNumber:         fmt.Sprintf("0x%x", m.BlockNumber),
+		DeletionBlockNumber: fmt.Sprintf("0x%x", m.DeletionBlockNumber),
+		Alias:               (*Alias)(m),
+	}
+	return json.Marshal(aux)
+}
+
+type MatchAdvanced struct {
+	ApplicationID     int64          `sql:"primary_key" json:"-"`
+	EpochIndex        uint64         `sql:"primary_key" json:"epoch_index"`
+	TournamentAddress common.Address `sql:"primary_key" json:"tournament_address"`
+	IDHash            common.Hash    `sql:"primary_key" json:"id_hash"`
+	OtherParent       common.Hash    `json:"other_parent"`
+	LeftNode          common.Hash    `json:"left_node"`
+	BlockNumber       uint64         `json:"block_number"`
+	TxHash            common.Hash    `json:"tx_hash"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+func (m *MatchAdvanced) MarshalJSON() ([]byte, error) {
+	// Create an alias to avoid infinite recursion in MarshalJSON.
+	type Alias MatchAdvanced
+	// Define a new structure that embeds the alias but overrides the hex fields.
+	aux := &struct {
+		EpochIndex  string `json:"epoch_index"`
+		BlockNumber string `json:"block_number"`
+		*Alias
+	}{
+		EpochIndex:  fmt.Sprintf("0x%x", m.EpochIndex),
+		BlockNumber: fmt.Sprintf("0x%x", m.BlockNumber),
+		Alias:       (*Alias)(m),
+	}
+	return json.Marshal(aux)
+}
+
+// MatchDeletionReason represents the reason why a match was deleted
+type MatchDeletionReason string
+
+const (
+	MatchDeletionReason_STEP             MatchDeletionReason = "STEP"
+	MatchDeletionReason_TIMEOUT          MatchDeletionReason = "TIMEOUT"
+	MatchDeletionReason_CHILD_TOURNAMENT MatchDeletionReason = "CHILD_TOURNAMENT"
+	MatchDeletionReason_NOT_DELETED      MatchDeletionReason = "NOT_DELETED"
+)
+
+var MatchDeletionReasonAllValues = []MatchDeletionReason{
+	MatchDeletionReason_STEP,
+	MatchDeletionReason_TIMEOUT,
+	MatchDeletionReason_CHILD_TOURNAMENT,
+	MatchDeletionReason_NOT_DELETED,
+}
+
+func (e *MatchDeletionReason) Scan(value any) error {
+	var enumValue string
+	switch val := value.(type) {
+	case string:
+		enumValue = val
+	case []byte:
+		enumValue = string(val)
+	default:
+		return errors.New("invalid value for MatchDeletionReason enum. Enum value has to be of type string or []byte")
+	}
+
+	switch enumValue {
+	case "STEP":
+		*e = MatchDeletionReason_STEP
+	case "TIMEOUT":
+		*e = MatchDeletionReason_TIMEOUT
+	case "CHILD_TOURNAMENT":
+		*e = MatchDeletionReason_CHILD_TOURNAMENT
+	case "NOT_DELETED":
+		*e = MatchDeletionReason_NOT_DELETED
+	default:
+		return errors.New("invalid value '" + enumValue + "' for MatchDeletionReason enum")
+	}
+
+	return nil
+}
+
+func (e MatchDeletionReason) String() string {
+	return string(e)
+}
+
+func MatchDeletionReasonFromUint8(v uint8) MatchDeletionReason {
+	switch v {
+	case 0:
+		return MatchDeletionReason_STEP
+	case 1:
+		return MatchDeletionReason_TIMEOUT
+	case 2: //nolint: mnd
+		return MatchDeletionReason_CHILD_TOURNAMENT
+	case 0xff: //nolint: mnd
+		return MatchDeletionReason_NOT_DELETED
+	default:
+		return MatchDeletionReason_STEP // default to STEP for unknown values
+	}
+}
+
+// WinnerCommitment represents the winner commitment of a match
+type WinnerCommitment string
+
+const (
+	WinnerCommitment_NONE WinnerCommitment = "NONE"
+	WinnerCommitment_ONE  WinnerCommitment = "ONE"
+	WinnerCommitment_TWO  WinnerCommitment = "TWO"
+)
+
+var WinnerCommitmentAllValues = []WinnerCommitment{
+	WinnerCommitment_NONE,
+	WinnerCommitment_ONE,
+	WinnerCommitment_TWO,
+}
+
+func (e *WinnerCommitment) Scan(value any) error {
+	var enumValue string
+	switch val := value.(type) {
+	case string:
+		enumValue = val
+	case []byte:
+		enumValue = string(val)
+	default:
+		return errors.New("invalid value for WinnerCommitment enum. Enum value has to be of type string or []byte")
+	}
+
+	switch enumValue {
+	case "NONE":
+		*e = WinnerCommitment_NONE
+	case "ONE":
+		*e = WinnerCommitment_ONE
+	case "TWO":
+		*e = WinnerCommitment_TWO
+	default:
+		return errors.New("invalid value '" + enumValue + "' for WinnerCommitment enum")
+	}
+
+	return nil
+}
+
+func (e WinnerCommitment) String() string {
+	return string(e)
+}
+
+func WinnerCommitmentFromUint8(v uint8) WinnerCommitment {
+	switch v {
+	case 0:
+		return WinnerCommitment_NONE
+	case 1:
+		return WinnerCommitment_ONE
+	case 2: //nolint: mnd
+		return WinnerCommitment_TWO
+	default:
+		return WinnerCommitment_NONE // default to NONE for unknown values
+	}
 }
 
 func Pointer[T any](v T) *T {

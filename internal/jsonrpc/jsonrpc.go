@@ -29,6 +29,8 @@ const (
 	MAX_BODY_SIZE = 1 << 20
 	// Maximum amount of items to list (10,000).
 	LIST_ITEM_LIMIT = 10000
+	// Default amount of item on a list (50)
+	LIST_ITEM_DEFAULT = 50
 )
 
 const (
@@ -86,6 +88,22 @@ func (s *Service) handleRPC(w http.ResponseWriter, r *http.Request) {
 		s.handleListReports(w, r, req)
 	case "cartesi_getReport":
 		s.handleGetReport(w, r, req)
+	case "cartesi_listTournaments":
+		s.handleListTournaments(w, r, req)
+	case "cartesi_getTournament":
+		s.handleGetTournament(w, r, req)
+	case "cartesi_listCommitments":
+		s.handleListCommitments(w, r, req)
+	case "cartesi_getCommitment":
+		s.handleGetCommitment(w, r, req)
+	case "cartesi_listMatches":
+		s.handleListMatches(w, r, req)
+	case "cartesi_getMatch":
+		s.handleGetMatch(w, r, req)
+	case "cartesi_listMatchAdvances":
+		s.handleListMatchAdvances(w, r, req)
+	case "cartesi_getMatchAdvanced":
+		s.handleGetMatchAdvanced(w, r, req)
 	case "cartesi_getChainId":
 		s.handleGetChainId(w, r, req)
 	case "cartesi_getNodeVersion":
@@ -126,7 +144,7 @@ func (s *Service) handleListApplications(w http.ResponseWriter, r *http.Request,
 	}
 	// Use default values if not provided
 	if params.Limit <= 0 {
-		params.Limit = 50
+		params.Limit = LIST_ITEM_DEFAULT
 	}
 	// Cap limit to 10,000.
 	if params.Limit > LIST_ITEM_LIMIT {
@@ -215,7 +233,7 @@ func (s *Service) handleListEpochs(w http.ResponseWriter, r *http.Request, req R
 
 	// Use default values if not provided
 	if params.Limit <= 0 {
-		params.Limit = 50
+		params.Limit = LIST_ITEM_DEFAULT
 	}
 
 	if params.Limit > LIST_ITEM_LIMIT {
@@ -373,7 +391,7 @@ func (s *Service) handleListInputs(w http.ResponseWriter, r *http.Request, req R
 
 	// Use default values if not provided
 	if params.Limit <= 0 {
-		params.Limit = 50
+		params.Limit = LIST_ITEM_DEFAULT
 	}
 
 	if params.Limit > LIST_ITEM_LIMIT {
@@ -559,7 +577,7 @@ func (s *Service) handleListOutputs(w http.ResponseWriter, r *http.Request, req 
 
 	// Use default values if not provided
 	if params.Limit <= 0 {
-		params.Limit = 50
+		params.Limit = LIST_ITEM_DEFAULT
 	}
 
 	if params.Limit > LIST_ITEM_LIMIT {
@@ -714,7 +732,7 @@ func (s *Service) handleListReports(w http.ResponseWriter, r *http.Request, req 
 
 	// Use default values if not provided
 	if params.Limit <= 0 {
-		params.Limit = 50
+		params.Limit = LIST_ITEM_DEFAULT
 	}
 
 	if params.Limit > LIST_ITEM_LIMIT {
@@ -825,8 +843,537 @@ func (s *Service) handleGetReport(w http.ResponseWriter, r *http.Request, req RP
 	writeRPCResult(w, req.ID, response)
 }
 
-func (s *Service) handleGetChainId(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+func (s *Service) handleListTournaments(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params ListTournamentsParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
 
+	// Use default values if not provided
+	if params.Limit <= 0 {
+		params.Limit = LIST_ITEM_DEFAULT
+	}
+
+	if params.Limit > LIST_ITEM_LIMIT {
+		params.Limit = LIST_ITEM_LIMIT
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	// Create tournament filter based on params
+	tournamentFilter := repository.TournamentFilter{}
+	if params.EpochIndex != nil {
+		epochIndex, err := parseIndex(*params.EpochIndex, "epoch_index")
+		if err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+			return
+		}
+		tournamentFilter.EpochIndex = &epochIndex
+	}
+
+	if params.Level != nil {
+		level, err := parseIndex(*params.Level, "level")
+		if err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+			return
+		}
+		tournamentFilter.Level = &level
+	}
+
+	if params.ParentTournamentAddress != nil {
+		parentAddress, err := config.ToAddressFromString(*params.ParentTournamentAddress)
+		if err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid parent tournament address: %v", err), nil)
+		}
+		tournamentFilter.ParentTournamentAddress = &parentAddress
+	}
+
+	if params.ParentMatchIDHash != nil {
+		parentMatchIDHash, err := config.ToHashFromString(*params.ParentMatchIDHash)
+		if err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid parent match ID hash: %v", err), nil)
+		}
+		tournamentFilter.ParentMatchIDHash = &parentMatchIDHash
+	}
+
+	tournaments, total, err := s.repository.ListTournaments(r.Context(), params.Application, tournamentFilter, repository.Pagination{
+		Limit:  params.Limit,
+		Offset: params.Offset,
+	}, params.Descending)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve tournaments from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if tournaments == nil {
+		tournaments = []*model.Tournament{}
+	}
+
+	// Format response according to spec
+	result := struct {
+		Data       []*model.Tournament `json:"data"`
+		Pagination struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		} `json:"pagination"`
+	}{
+		Data: tournaments,
+		Pagination: struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		}{
+			TotalCount: total,
+			Limit:      params.Limit,
+			Offset:     params.Offset,
+		},
+	}
+
+	writeRPCResult(w, req.ID, result)
+}
+
+func (s *Service) handleGetTournament(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params GetTournamentParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	// Validate tournament address
+	if _, err := config.ToAddressFromString(params.Address); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid tournament address: %v", err), nil)
+		return
+	}
+
+	tournament, err := s.repository.GetTournament(r.Context(), params.Application, params.Address)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve tournament from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if tournament == nil {
+		writeRPCError(w, req.ID, JSONRPC_RESOURCE_NOT_FOUND, "Tournament not found", nil)
+		return
+	}
+
+	// Format response according to spec
+	response := struct {
+		Data *model.Tournament `json:"data"`
+	}{
+		Data: tournament,
+	}
+
+	writeRPCResult(w, req.ID, response)
+}
+
+func (s *Service) handleListCommitments(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params ListCommitmentsParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
+
+	// Use default values if not provided
+	if params.Limit <= 0 {
+		params.Limit = LIST_ITEM_DEFAULT
+	}
+
+	if params.Limit > LIST_ITEM_LIMIT {
+		params.Limit = LIST_ITEM_LIMIT
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	// Create commitment filter based on params
+	commitmentFilter := repository.CommitmentFilter{}
+	if params.EpochIndex != nil {
+		epochIndex, err := parseIndex(*params.EpochIndex, "epoch_index")
+		if err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+			return
+		}
+		commitmentFilter.EpochIndex = &epochIndex
+	}
+
+	if params.TournamentAddress != nil {
+		if _, err := config.ToAddressFromString(*params.TournamentAddress); err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid tournament address: %v", err), nil)
+			return
+		}
+		commitmentFilter.TournamentAddress = params.TournamentAddress
+	}
+
+	commitments, total, err := s.repository.ListCommitments(r.Context(), params.Application, commitmentFilter, repository.Pagination{
+		Limit:  params.Limit,
+		Offset: params.Offset,
+	}, params.Descending)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve commitments from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if commitments == nil {
+		commitments = []*model.Commitment{}
+	}
+
+	// Format response according to spec
+	result := struct {
+		Data       []*model.Commitment `json:"data"`
+		Pagination struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		} `json:"pagination"`
+	}{
+		Data: commitments,
+		Pagination: struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		}{
+			TotalCount: total,
+			Limit:      params.Limit,
+			Offset:     params.Offset,
+		},
+	}
+
+	writeRPCResult(w, req.ID, result)
+}
+
+func (s *Service) handleGetCommitment(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params GetCommitmentParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	epochIndex, err := parseIndex(params.EpochIndex, "epoch_index")
+	if err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+		return
+	}
+
+	if _, err := config.ToAddressFromString(params.TournamentAddress); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid tournament address: %v", err), nil)
+		return
+	}
+
+	if _, err := hex.DecodeString(params.Commitment); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid commitment hex: %v", err), nil)
+		return
+	}
+
+	commitment, err := s.repository.GetCommitment(r.Context(), params.Application, epochIndex, params.TournamentAddress, params.Commitment)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve commitment from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if commitment == nil {
+		writeRPCError(w, req.ID, JSONRPC_RESOURCE_NOT_FOUND, "Commitment not found", nil)
+		return
+	}
+
+	// Format response according to spec
+	response := struct {
+		Data *model.Commitment `json:"data"`
+	}{
+		Data: commitment,
+	}
+
+	writeRPCResult(w, req.ID, response)
+}
+
+func (s *Service) handleListMatches(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params ListMatchesParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
+
+	// Use default values if not provided
+	if params.Limit <= 0 {
+		params.Limit = LIST_ITEM_DEFAULT
+	}
+
+	if params.Limit > LIST_ITEM_LIMIT {
+		params.Limit = LIST_ITEM_LIMIT
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	// Create match filter based on params
+	matchFilter := repository.MatchFilter{}
+	if params.EpochIndex != nil {
+		epochIndex, err := parseIndex(*params.EpochIndex, "epoch_index")
+		if err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+			return
+		}
+		matchFilter.EpochIndex = &epochIndex
+	}
+
+	if params.TournamentAddress != nil {
+		if _, err := config.ToAddressFromString(*params.TournamentAddress); err != nil {
+			writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid tournament address: %v", err), nil)
+			return
+		}
+		matchFilter.TournamentAddress = params.TournamentAddress
+	}
+
+	matches, total, err := s.repository.ListMatches(r.Context(), params.Application, matchFilter, repository.Pagination{
+		Limit:  params.Limit,
+		Offset: params.Offset,
+	}, params.Descending)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve matches from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if matches == nil {
+		matches = []*model.Match{}
+	}
+
+	// Format response according to spec
+	result := struct {
+		Data       []*model.Match `json:"data"`
+		Pagination struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		} `json:"pagination"`
+	}{
+		Data: matches,
+		Pagination: struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		}{
+			TotalCount: total,
+			Limit:      params.Limit,
+			Offset:     params.Offset,
+		},
+	}
+
+	writeRPCResult(w, req.ID, result)
+}
+
+func (s *Service) handleGetMatch(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params GetMatchParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	epochIndex, err := parseIndex(params.EpochIndex, "epoch_index")
+	if err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+		return
+	}
+
+	if _, err := config.ToAddressFromString(params.TournamentAddress); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid tournament address: %v", err), nil)
+		return
+	}
+
+	if _, err := config.ToHashFromString(params.IDHash); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid ID hash: %v", err), nil)
+		return
+	}
+
+	match, err := s.repository.GetMatch(r.Context(), params.Application, epochIndex, params.TournamentAddress, params.IDHash)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve match from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if match == nil {
+		writeRPCError(w, req.ID, JSONRPC_RESOURCE_NOT_FOUND, "Match not found", nil)
+		return
+	}
+
+	// Format response according to spec
+	response := struct {
+		Data *model.Match `json:"data"`
+	}{
+		Data: match,
+	}
+
+	writeRPCResult(w, req.ID, response)
+}
+
+func (s *Service) handleListMatchAdvances(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params ListMatchAdvancesParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
+
+	// Use default values if not provided
+	if params.Limit <= 0 {
+		params.Limit = LIST_ITEM_DEFAULT
+	}
+
+	if params.Limit > LIST_ITEM_LIMIT {
+		params.Limit = LIST_ITEM_LIMIT
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	// Create match advance filter based on params
+	epochIndex, err := parseIndex(params.EpochIndex, "epoch_index")
+	if err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+		return
+	}
+
+	if _, err := config.ToAddressFromString(params.TournamentAddress); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid tournament address: %v", err), nil)
+		return
+	}
+
+	if _, err := config.ToHashFromString(params.IDHash); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid ID hash: %v", err), nil)
+		return
+	}
+
+	matchAdvances, total, err := s.repository.ListMatchAdvances(r.Context(), params.Application, epochIndex, params.TournamentAddress, params.IDHash, repository.Pagination{
+		Limit:  params.Limit,
+		Offset: params.Offset,
+	}, params.Descending)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve match advances from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if matchAdvances == nil {
+		matchAdvances = []*model.MatchAdvanced{}
+	}
+
+	// Format response according to spec
+	result := struct {
+		Data       []*model.MatchAdvanced `json:"data"`
+		Pagination struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		} `json:"pagination"`
+	}{
+		Data: matchAdvances,
+		Pagination: struct {
+			TotalCount uint64 `json:"total_count"`
+			Limit      uint64 `json:"limit"`
+			Offset     uint64 `json:"offset"`
+		}{
+			TotalCount: total,
+			Limit:      params.Limit,
+			Offset:     params.Offset,
+		},
+	}
+
+	writeRPCResult(w, req.ID, result)
+}
+
+func (s *Service) handleGetMatchAdvanced(w http.ResponseWriter, r *http.Request, req RPCRequest) {
+	var params GetMatchAdvancedParams
+	if err := UnmarshalParams(req.Params, &params); err != nil {
+		s.Logger.Debug("Invalid parameters", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, "Invalid parameters", nil)
+		return
+	}
+
+	// Validate application parameter
+	if err := validateNameOrAddress(params.Application); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid application identifier: %v", err), nil)
+		return
+	}
+
+	epochIndex, err := parseIndex(params.EpochIndex, "epoch_index")
+	if err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, err.Error(), nil)
+		return
+	}
+
+	if _, err := config.ToAddressFromString(params.TournamentAddress); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid tournament address: %v", err), nil)
+		return
+	}
+
+	if _, err := config.ToHashFromString(params.IDHash); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid ID hash: %v", err), nil)
+		return
+	}
+
+	if _, err := config.ToHashFromString(params.Parent); err != nil {
+		writeRPCError(w, req.ID, JSONRPC_INVALID_PARAMS, fmt.Sprintf("Invalid parent hash: %v", err), nil)
+		return
+	}
+
+	matchAdvanced, err := s.repository.GetMatchAdvanced(r.Context(), params.Application, epochIndex, params.TournamentAddress, params.IDHash, params.Parent)
+	if err != nil {
+		s.Logger.Error("Unable to retrieve match advanced from repository", "err", err)
+		writeRPCError(w, req.ID, JSONRPC_INTERNAL_ERROR, "Internal server error", nil)
+		return
+	}
+	if matchAdvanced == nil {
+		writeRPCError(w, req.ID, JSONRPC_RESOURCE_NOT_FOUND, "Match advanced not found", nil)
+		return
+	}
+
+	// Format response according to spec
+	response := struct {
+		Data *model.MatchAdvanced `json:"data"`
+	}{
+		Data: matchAdvanced,
+	}
+
+	writeRPCResult(w, req.ID, response)
+}
+
+func (s *Service) handleGetChainId(w http.ResponseWriter, r *http.Request, req RPCRequest) {
 	config, err := repository.LoadNodeConfig[evmreader.PersistentConfig](r.Context(), s.repository, evmreader.EvmReaderConfigKey)
 	if errors.Is(err, repository.ErrNotFound) {
 		writeRPCError(w, req.ID, JSONRPC_RESOURCE_NOT_FOUND, "EVM Reader config not found", nil)

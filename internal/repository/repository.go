@@ -58,6 +58,23 @@ type ReportFilter struct {
 	InputIndex *uint64
 }
 
+type TournamentFilter struct {
+	EpochIndex              *uint64
+	Level                   *uint64
+	ParentTournamentAddress *common.Address
+	ParentMatchIDHash       *common.Hash
+}
+
+type CommitmentFilter struct {
+	EpochIndex        *uint64
+	TournamentAddress *string
+}
+
+type MatchFilter struct {
+	EpochIndex        *uint64
+	TournamentAddress *string
+}
+
 type ApplicationRepository interface {
 	CreateApplication(ctx context.Context, app *Application, withExecutionParameters bool) (int64, error)
 	GetApplication(ctx context.Context, nameOrAddress string) (*Application, error)
@@ -89,6 +106,7 @@ type EpochRepository interface {
 	UpdateEpoch(ctx context.Context, nameOrAddress string, e *Epoch) error
 	UpdateEpochStatus(ctx context.Context, nameOrAddress string, e *Epoch) error
 	UpdateEpochsInputsProcessed(ctx context.Context, nameOrAddress string) ([]uint64, error)
+	UpdateEpochCommitment(ctx context.Context, appID int64, epochIndex uint64, commitment []byte) error
 
 	ListEpochs(ctx context.Context, nameOrAddress string, f EpochFilter, p Pagination, descending bool) ([]*Epoch, uint64, error)
 }
@@ -113,6 +131,33 @@ type OutputRepository interface {
 type ReportRepository interface {
 	GetReport(ctx context.Context, nameOrAddress string, reportIndex uint64) (*Report, error)
 	ListReports(ctx context.Context, nameOrAddress string, f ReportFilter, p Pagination, descending bool) ([]*Report, uint64, error)
+}
+
+type TournamentRepository interface {
+	CreateTournament(ctx context.Context, nameOrAddress string, t *Tournament) error
+	UpdateTournament(ctx context.Context, nameOrAddress string, t *Tournament) error
+	GetTournament(ctx context.Context, nameOrAddress string, address string) (*Tournament, error)
+	ListTournaments(ctx context.Context, nameOrAddress string, f TournamentFilter,
+		p Pagination, descending bool) ([]*Tournament, uint64, error)
+}
+
+type CommitmentRepository interface {
+	CreateCommitment(ctx context.Context, nameOrAddress string, c *Commitment) error
+	GetCommitment(ctx context.Context, nameOrAddress string, epochIndex uint64, tournamentAddress string, commitmentHex string) (*Commitment, error)
+	ListCommitments(ctx context.Context, nameOrAddress string, f CommitmentFilter, p Pagination, descending bool) ([]*Commitment, uint64, error)
+}
+
+type MatchRepository interface {
+	CreateMatch(ctx context.Context, nameOrAddress string, m *Match) error
+	UpdateMatch(ctx context.Context, nameOrAddress string, m *Match) error
+	GetMatch(ctx context.Context, nameOrAddress string, epochIndex uint64, tournamentAddress string, idHashHex string) (*Match, error)
+	ListMatches(ctx context.Context, nameOrAddress string, f MatchFilter, p Pagination, descending bool) ([]*Match, uint64, error)
+}
+
+type MatchAdvancedRepository interface {
+	CreateMatchAdvanced(ctx context.Context, nameOrAddress string, m *MatchAdvanced) error
+	GetMatchAdvanced(ctx context.Context, nameOrAddress string, epochIndex uint64, tournamentAddress string, idHashHex string, parentHex string) (*MatchAdvanced, error)
+	ListMatchAdvances(ctx context.Context, nameOrAddress string, epochIndex uint64, tournamentAddress string, idHashHex string, p Pagination, descending bool) ([]*MatchAdvanced, uint64, error)
 }
 
 type BulkOperationsRepository interface {
@@ -159,6 +204,10 @@ type Repository interface {
 	InputRepository
 	OutputRepository
 	ReportRepository
+	TournamentRepository
+	CommitmentRepository
+	MatchRepository
+	MatchAdvancedRepository
 	BulkOperationsRepository
 	NodeConfigRepository
 	ClaimerRepository
