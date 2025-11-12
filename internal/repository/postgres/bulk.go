@@ -101,6 +101,33 @@ func getReportNextIndex(
 	return currentIndex, nil
 }
 
+func getStateHashNextIndex(
+	ctx context.Context,
+	tx pgx.Tx,
+	appID int64,
+	epochIndex uint64,
+) (uint64, error) {
+
+	query := table.StateHashes.SELECT(
+		postgres.COALESCE(
+			postgres.Float(1).ADD(postgres.MAXf(table.StateHashes.Index)),
+			postgres.Float(0),
+		),
+	).WHERE(
+		table.StateHashes.InputEpochApplicationID.EQ(postgres.Int64(appID)).
+			AND(table.StateHashes.EpochIndex.EQ(postgres.RawFloat(fmt.Sprintf("%d", epochIndex)))),
+	)
+
+	queryStr, args := query.Sql()
+	var currentIndex uint64
+	err := tx.QueryRow(ctx, queryStr, args...).Scan(&currentIndex)
+	if err != nil {
+		err = fmt.Errorf("failed to get the next state hash index: %w", err)
+		return 0, errors.Join(err, tx.Rollback(ctx))
+	}
+	return currentIndex, nil
+}
+
 func insertOutputs(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -170,6 +197,59 @@ func insertReports(
 			data,
 		)
 	}
+
+	sqlStr, args := stmt.Sql()
+	_, err = tx.Exec(ctx, sqlStr, args...)
+	if err != nil {
+		return errors.Join(err, tx.Rollback(ctx))
+	}
+	return nil
+}
+
+func insertStateHashes(
+	ctx context.Context,
+	tx pgx.Tx,
+	appID int64,
+	epochIndex uint64,
+	inputIndex uint64,
+	hashes [][32]byte,
+	machineHash common.Hash,
+	remainingMetaCycles uint64,
+) error {
+
+	nextIndex, err := getStateHashNextIndex(ctx, tx, appID, epochIndex)
+	if err != nil {
+		return err
+	}
+
+	stmt := table.StateHashes.INSERT(
+		table.StateHashes.InputEpochApplicationID,
+		table.StateHashes.EpochIndex,
+		table.StateHashes.InputIndex,
+		table.StateHashes.Index,
+		table.StateHashes.MachineHash,
+		table.StateHashes.Repetitions,
+	)
+
+	for i, h := range hashes {
+		stmt = stmt.VALUES(
+			appID,
+			epochIndex,
+			inputIndex,
+			nextIndex+uint64(i),
+			h[:],
+			1,
+		)
+	}
+
+	stmt = stmt.VALUES(
+		appID,
+		epochIndex,
+		inputIndex,
+		nextIndex+uint64(len(hashes)),
+		machineHash[:],
+		remainingMetaCycles,
+	)
 
 	sqlStr, args := stmt.Sql()
 	_, err = tx.Exec(ctx, sqlStr, args...)
@@ -267,7 +347,14 @@ func (r *PostgresRepository) StoreAdvanceResult(
 		}
 	}
 
-	err = updateInput(ctx, tx, appID, res.InputIndex, res.Status, res.OutputsHash, *res.MachineHash)
+	if res.IsDaveConsensus {
+		err = insertStateHashes(ctx, tx, appID, res.EpochIndex, res.InputIndex, res.Hashes, res.MachineHash, res.RemainingMetaCycles)
+		if err != nil {
+			return err
+		}
+	}
+
+	err = updateInput(ctx, tx, appID, res.InputIndex, res.Status, res.OutputsHash, res.MachineHash)
 	if err != nil {
 		return err
 	}

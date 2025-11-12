@@ -756,12 +756,16 @@ type NodeConfig[T any] struct {
 }
 
 type AdvanceResult struct {
-	InputIndex  uint64
-	Status      InputCompletionStatus
-	Outputs     [][]byte
-	Reports     [][]byte
-	OutputsHash common.Hash
-	MachineHash *common.Hash
+	EpochIndex          uint64
+	InputIndex          uint64
+	Status              InputCompletionStatus
+	Outputs             [][]byte
+	Reports             [][]byte
+	Hashes              [][32]byte
+	RemainingMetaCycles uint64
+	OutputsHash         common.Hash
+	MachineHash         common.Hash
+	IsDaveConsensus     bool
 }
 
 type InspectResult struct {

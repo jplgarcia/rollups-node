@@ -37,3 +37,24 @@ type TournamentEvents struct {
 	MatchDeleted       []*itournament.ITournamentMatchDeleted
 	NewInnerTournament []*itournament.ITournamentNewInnerTournament
 }
+
+type TournamentLevel int
+
+const (
+	RootLevel TournamentLevel = iota
+	MiddleLevel
+	BottomLevel
+)
+
+func (l TournamentLevel) String() string {
+	switch l {
+	case RootLevel:
+		return "root"
+	case MiddleLevel:
+		return "middle"
+	case BottomLevel:
+		return "bottom"
+	default:
+		return "unknown"
+	}
+}
