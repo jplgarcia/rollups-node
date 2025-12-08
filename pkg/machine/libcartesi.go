@@ -21,6 +21,7 @@ type RemoteMachineInterface interface {
 	ReadReg(reg emulator.RegID) (uint64, error)
 	SendCmioResponse(reason uint16, data []byte) error
 	ReceiveCmioRequest() (uint8, uint16, []byte, error)
+	WriteMemory(address uint64, data []byte) error
 	Store(directory string) error
 	Delete()
 	ForkServer() (*emulator.RemoteMachine, string, uint32, error)
@@ -103,6 +104,13 @@ func (e *LibCartesiBackend) Store(directory string, timeout time.Duration) error
 		return fmt.Errorf("failed to set operation timeout: %w", err)
 	}
 	return e.inner.Store(directory)
+}
+
+func (e *LibCartesiBackend) WriteMemory(address uint64, data []byte, timeout time.Duration) error {
+	if err := e.inner.SetTimeout(timeout.Milliseconds()); err != nil {
+		return fmt.Errorf("failed to set operation timeout: %w", err)
+	}
+	return e.inner.WriteMemory(address, data)
 }
 
 func (e *LibCartesiBackend) Delete() {

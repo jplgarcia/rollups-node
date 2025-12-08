@@ -55,6 +55,11 @@ func (m *MockBackend) GetRootHash(timeout time.Duration) (Hash, error) {
 	return args.Get(0).(Hash), args.Error(1)
 }
 
+func (m *MockBackend) WriteMemory(address uint64, data []byte, timeout time.Duration) error {
+	args := m.Called(address, data, timeout)
+	return args.Error(0)
+}
+
 func (m *MockBackend) Delete() {
 	m.Called()
 }

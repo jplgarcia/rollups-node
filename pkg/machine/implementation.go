@@ -149,6 +149,20 @@ func (m *machineImpl) OutputsHash(ctx context.Context) (Hash, error) {
 func (m *machineImpl) Advance(ctx context.Context, input []byte, computeHashes bool) (bool, []Output, []Report, []Hash, uint64, Hash, error) {
 	outputsHash := Hash{}
 
+	// FIXME: work around for test checkpoint address. REMOVE
+	if computeHashes {
+		hash, err := m.backend.GetRootHash(m.params.LoadDeadline)
+		if err != nil {
+			err := fmt.Errorf("could not get the machine's root hash: %w", err)
+			return false, nil, nil, nil, 0, Hash{}, errors.Join(ErrMachineInternal, err)
+		}
+		err = m.backend.WriteMemory(0x7ffff000, hash[:], m.params.FastDeadline)
+		if err != nil {
+			err := fmt.Errorf("could not write checkpoint hash in to machine memory: %w", err)
+			return false, nil, nil, nil, 0, Hash{}, errors.Join(ErrMachineInternal, err)
+		}
+	}
+
 	// TODO: return the exception reason
 	accepted, outputs, reports, hashes, remaining, data, err := m.process(ctx, input, AdvanceStateRequest, computeHashes)
 	if err != nil {

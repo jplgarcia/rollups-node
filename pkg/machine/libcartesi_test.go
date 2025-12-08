@@ -459,6 +459,11 @@ func (m *MockRemoteMachine) Store(directory string) error {
 	return args.Error(0)
 }
 
+func (m *MockRemoteMachine) WriteMemory(address uint64, data []byte) error {
+	args := m.Called(address, data)
+	return args.Error(0)
+}
+
 func (m *MockRemoteMachine) Delete() {
 	m.Called()
 }
