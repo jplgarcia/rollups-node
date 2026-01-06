@@ -11,20 +11,22 @@ import (
 	"time"
 
 	"github.com/cartesi/rollups-node/pkg/emulator"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // RemoteMachineInterface defines the interface that LibCartesiBackend needs from a remote machine
 type RemoteMachineInterface interface {
 	SetTimeout(timeoutMs int64) error
-	Load(dir string, runtimeConfig string) error
+	Load(dir string, runtimeConfig string, smode emulator.SharingMode) error
 	Run(mcycleEnd uint64) (emulator.BreakReason, error)
+	CollectMCycleRootHashes(mcycleEnd, mcyclePeriod, mcyclePhase uint64, log2BundleMcycleCount int32, previousBackTree string) ([]byte, error)
 	GetRootHash() (emulator.Hash, error)
 	GetProof(address uint64, log2size int32) (string, error)
 	ReadReg(reg emulator.RegID) (uint64, error)
 	SendCmioResponse(reason uint16, data []byte) error
 	ReceiveCmioRequest() (uint8, uint16, []byte, error)
 	WriteMemory(address uint64, data []byte) error
-	Store(directory string) error
+	Store(directory string, smode emulator.SharingMode) error
 	Delete()
 	ForkServer() (*emulator.RemoteMachine, string, uint32, error)
 	ShutdownServer() error
@@ -37,6 +39,16 @@ type proofJson struct {
 	Siblings       []Hash `json:"sibling_hashes"`
 	TargetAddress  uint64 `json:"target_address"`
 	TargetHash     Hash   `json:"target_hash"`
+}
+
+// Struct for the decoded `result` field of cm_collect_mcycle_root_hashes (originally returned as json).
+// The value comes back as a json string, that needs to be decoded to this struct below.
+// BackTree may or may not be present, check cm_collect_mcycle_root_hashes documentation for details.
+type CollectMCycleRootHashesState struct {
+	RootHashes  [][]byte       `json:"hashes"`
+	MCyclePhase uint64         `json:"mcycle_phase"`
+	BreakReason string         `json:"break_reason"`
+	BackTree   json.RawMessage `json:"back_tree"`
 }
 
 func decodeB64To32(dst *Hash, s string) error {
@@ -111,7 +123,7 @@ func (e *LibCartesiBackend) Load(dir string, runtimeConfig string, timeout time.
 	if err := e.inner.SetTimeout(timeout.Milliseconds()); err != nil {
 		return fmt.Errorf("failed to set operation timeout: %w", err)
 	}
-	return e.inner.Load(dir, runtimeConfig)
+	return e.inner.Load(dir, runtimeConfig, emulator.SharingNone)
 }
 
 func (e *LibCartesiBackend) Run(mcycleEnd uint64, timeout time.Duration) (BreakReason, error) {
@@ -186,7 +198,7 @@ func (e *LibCartesiBackend) Store(directory string, timeout time.Duration) error
 	if err := e.inner.SetTimeout(timeout.Milliseconds()); err != nil {
 		return fmt.Errorf("failed to set operation timeout: %w", err)
 	}
-	return e.inner.Store(directory)
+	return e.inner.Store(directory, emulator.SharingNone)
 }
 
 func (e *LibCartesiBackend) WriteMemory(address uint64, data []byte, timeout time.Duration) error {
@@ -232,6 +244,62 @@ func (e *LibCartesiBackend) CmioRxBufferSize() uint64 {
 }
 
 func (e *LibCartesiBackend) RunAndCollectRootHashes(
+	mcycleEnd uint64,
+	state *HashCollectorState,
+	timeout time.Duration,
+) (reason BreakReason, err error) {
+	return e.RunAndCollectRootHashesNew(mcycleEnd, state, timeout)
+}
+
+func (e *LibCartesiBackend) RunAndCollectRootHashesNew(
+	mcycleEnd uint64,
+	state *HashCollectorState,
+	timeout time.Duration,
+) (reason BreakReason, err error) {
+	if err := e.inner.SetTimeout(timeout.Milliseconds()); err != nil {
+		return 0, fmt.Errorf("failed to set operation timeout: %w", err)
+	}
+	result, err := e.inner.CollectMCycleRootHashes(mcycleEnd, state.Period, state.Phase, state.BundleLog2, "")
+	if err != nil {
+		return Failed, err
+	}
+
+	var hcs CollectMCycleRootHashesState
+	err = json.Unmarshal(result, &hcs)
+	if err != nil {
+		fmt.Println(string(result))
+		return Failed, err
+	}
+
+	var br BreakReason
+	switch hcs.BreakReason {
+	case "failed":
+		br = Failed
+	case "halted":
+		br = Halted
+	case "reached_target_mcycle":
+		br = ReachedTargetMcycle
+	case "yielded_automatically":
+		br = YieldedAutomatically
+	case "yielded_softly":
+		br = YieldedSoftly
+	case "yielded_manually":
+		br = YieldedManually
+	default:
+		return Failed, fmt.Errorf("unimplemented break reason on RunAndCollectRootHashesNew")
+	}
+
+	state.Hashes = nil
+	for _, hash := range hcs.RootHashes {
+		state.Hashes = append(state.Hashes, common.BytesToHash(hash))
+	}
+	state.Phase = hcs.MCyclePhase
+	state.BackTree = hcs.BackTree
+	// state.MaxHashes = ?
+	return br, nil
+}
+
+func (e *LibCartesiBackend) RunAndCollectRootHashesOld(
 	mcycleEnd uint64,
 	state *HashCollectorState,
 	timeout time.Duration,
