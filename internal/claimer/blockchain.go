@@ -6,7 +6,6 @@ package claimer
 import (
 	"context"
 	"fmt"
-	"iter"
 	"log/slog"
 	"math/big"
 
@@ -15,8 +14,6 @@ import (
 	"github.com/cartesi/rollups-node/pkg/contracts/iconsensus"
 	"github.com/cartesi/rollups-node/pkg/ethutil"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -103,22 +100,6 @@ func (self *claimerBlockchain) submitClaimToBlockchain(
 	return txHash, err
 }
 
-func unwrapClaimSubmitted(
-	ic *iconsensus.IConsensus,
-	pull func() (log *types.Log, err error, ok bool),
-) (
-	*iconsensus.IConsensusClaimSubmitted,
-	bool,
-	error,
-) {
-	log, err, ok := pull()
-	if !ok || err != nil {
-		return nil, false, err
-	}
-	ev, err := ic.ParseClaimSubmitted(*log)
-	return ev, true, err
-}
-
 // scan the event stream for a claimSubmitted event that matches claim.
 // return this event and its successor
 func (self *claimerBlockchain) findClaimSubmittedEventAndSucc(
@@ -137,68 +118,62 @@ func (self *claimerBlockchain) findClaimSubmittedEventAndSucc(
 		return nil, nil, nil, err
 	}
 
-	// filter must match:
-	// - `ClaimSubmitted` events
-	// - submitter == nil (any)
-	// - appContract == claim.IApplicationAddress
-	c, err := iconsensus.IConsensusMetaData.GetAbi()
-	topics, err := abi.MakeTopics(
-		[]any{c.Events[model.MonitoredEvent_ClaimSubmitted.String()].ID},
-		nil,
-		[]any{application.IApplicationAddress},
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	it, err := self.filter.ChunkedFilterLogs(ctx, self.client, ethereum.FilterQuery{
-		FromBlock: new(big.Int).SetUint64(epoch.LastBlock),
-		ToBlock:   endBlock,
-		Addresses: []common.Address{application.IConsensusAddress},
-		Topics:    topics,
-	})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// pull events instead of iterating
-	next, stop := iter.Pull2(it)
-	defer stop()
-	for {
-		event, ok, err := unwrapClaimSubmitted(ic, next)
-		if !ok || err != nil {
-			return ic, event, nil, err
+	oracle := func(ctx context.Context, block uint64) (*big.Int, error) {
+		callOpts := &bind.CallOpts{
+			Context:     ctx,
+			BlockNumber: new(big.Int).SetUint64(block),
 		}
-		lastBlock := event.LastProcessedBlockNumber.Uint64()
+		numSubmittedClaims, err := ic.GetNumberOfSubmittedClaims(callOpts)
 
-		if claimSubmittedEventMatches(application, epoch, event) {
-			// found the event, does it has a successor? try to fetch it
-			succ, ok, err := unwrapClaimSubmitted(ic, next)
-			if !ok || err != nil {
-				return ic, event, nil, err
+		if err != nil {
+			return nil, fmt.Errorf("failed to get number of submitted claims at block %d: %w", block, err)
+		}
+		return numSubmittedClaims, nil
+	}
+
+	events := []*iconsensus.IConsensusClaimSubmitted{}
+	onHit := func(block uint64) error {
+		filterOpts := &bind.FilterOpts{
+			Context: ctx,
+			Start:   block,
+			End:     &block,
+		}
+		claimSubmittedEvents, err := ic.FilterClaimSubmitted(filterOpts, nil, []common.Address{application.IApplicationAddress})
+		if err != nil {
+			return fmt.Errorf("failed to retrieve ClaimSubmitted events at block %d: %w", block, err)
+		}
+		defer claimSubmittedEvents.Close()
+		for claimSubmittedEvents.Next() {
+			event := claimSubmittedEvents.Event
+			if (len(events) == 0) && claimSubmittedEventMatches(application, epoch, event) {
+				events = append(events, event)
+			} else if len(events) != 0 {
+				events = append(events, event)
 			}
-			return ic, event, succ, err
-		} else if lastBlock > epoch.LastBlock {
-			err = fmt.Errorf("No matching claim, searched up to %v", event)
-			return nil, nil, nil, err
 		}
+		err = claimSubmittedEvents.Error()
+		if err != nil {
+			return fmt.Errorf("failed to iterate ClaimSubmitted events: %w", err)
+		}
+		return nil
 	}
-}
 
-func unwrapClaimAccepted(
-	ic *iconsensus.IConsensus,
-	pull func() (log *types.Log, err error, ok bool),
-) (
-	*iconsensus.IConsensusClaimAccepted,
-	bool,
-	error,
-) {
-	log, err, ok := pull()
-	if !ok || err != nil {
-		return nil, false, err
+	numSubmittedClaims, err := oracle(ctx, epoch.LastBlock)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	ev, err := ic.ParseClaimAccepted(*log)
-	return ev, true, err
+	_, err = ethutil.FindTransitions(ctx, epoch.LastBlock, endBlock.Uint64(), numSubmittedClaims, oracle, onHit)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to walk ClaimSubmitted transitions: %w", err)
+	}
+
+	if len(events) == 0 {
+		return ic, nil, nil, nil
+	} else if len(events) == 1 {
+		return ic, events[0], nil, nil
+	} else {
+		return ic, events[0], events[1], nil
+	}
 }
 
 // scan the event stream for a claimAccepted event that matches claim.
@@ -219,49 +194,61 @@ func (self *claimerBlockchain) findClaimAcceptedEventAndSucc(
 		return nil, nil, nil, err
 	}
 
-	// filter must match:
-	// - `ClaimAccepted` events
-	// - appContract == claim.IApplicationAddress
-	c, err := iconsensus.IConsensusMetaData.GetAbi()
-	topics, err := abi.MakeTopics(
-		[]any{c.Events[model.MonitoredEvent_ClaimAccepted.String()].ID},
-		[]any{application.IApplicationAddress},
-	)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	it, err := self.filter.ChunkedFilterLogs(ctx, self.client, ethereum.FilterQuery{
-		FromBlock: new(big.Int).SetUint64(epoch.LastBlock),
-		ToBlock:   endBlock,
-		Addresses: []common.Address{application.IConsensusAddress},
-		Topics:    topics,
-	})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	// pull events instead of iterating
-	next, stop := iter.Pull2(it)
-	defer stop()
-	for {
-		event, ok, err := unwrapClaimAccepted(ic, next)
-		if !ok || err != nil {
-			return ic, event, nil, err
+	oracle := func(ctx context.Context, block uint64) (*big.Int, error) {
+		callOpts := &bind.CallOpts{
+			Context:     ctx,
+			BlockNumber: new(big.Int).SetUint64(block),
 		}
-		lastBlock := event.LastProcessedBlockNumber.Uint64()
+		numAcceptedClaims, err := ic.GetNumberOfAcceptedClaims(callOpts)
 
-		if claimAcceptedEventMatches(application, epoch, event) {
-			// found the event, does it has a successor? try to fetch it
-			succ, ok, err := unwrapClaimAccepted(ic, next)
-			if !ok || err != nil {
-				return ic, event, nil, err
+		if err != nil {
+			return nil, fmt.Errorf("failed to get number of accepted claims at block %d: %w", block, err)
+		}
+		return numAcceptedClaims, nil
+	}
+
+	events := []*iconsensus.IConsensusClaimAccepted{}
+	onHit := func(block uint64) error {
+		filterOpts := &bind.FilterOpts{
+			Context: ctx,
+			Start:   block,
+			End:     &block,
+		}
+		claimAcceptedEvents, err := ic.FilterClaimAccepted(filterOpts, []common.Address{application.IApplicationAddress})
+		if err != nil {
+			return fmt.Errorf("failed to retrieve claimAccepted events at block %d: %w", block, err)
+		}
+		defer claimAcceptedEvents.Close()
+		for claimAcceptedEvents.Next() {
+			event := claimAcceptedEvents.Event
+			if (len(events) == 0) && claimAcceptedEventMatches(application, epoch, event) {
+				events = append(events, claimAcceptedEvents.Event)
+			} else if len(events) != 0 {
+				events = append(events, claimAcceptedEvents.Event)
 			}
-			return ic, event, succ, err
-		} else if lastBlock > epoch.LastBlock {
-			err = fmt.Errorf("No matching claim, searched up to %v", event)
-			return nil, nil, nil, err
 		}
+		err = claimAcceptedEvents.Error()
+		if err != nil {
+			return fmt.Errorf("failed to iterate submitted claim events: %w", err)
+		}
+		return nil
+	}
+
+	numAcceptedClaims, err := oracle(ctx, epoch.LastBlock)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	_, err = ethutil.FindTransitions(ctx, epoch.LastBlock, endBlock.Uint64(), numAcceptedClaims, oracle, onHit)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to walk ClaimAccepted transitions: %w", err)
+	}
+
+	if len(events) == 0 {
+		return ic, nil, nil, nil
+	} else if len(events) == 1 {
+		return ic, events[0], nil, nil
+	} else {
+		return ic, events[0], events[1], nil
 	}
 }
 
